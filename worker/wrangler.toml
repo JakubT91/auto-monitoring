@@ -1,0 +1,19 @@
+name = "cestak-notifications"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# Cron trigger – každý den v 7:00 UTC
+# = 8:00 (zima, CET) / 9:00 (léto, CEST) českého času
+[triggers]
+crons = ["0 7 * * *"]
+
+# Secrets (NIKDY nepushuj do Gitu!) se nastavují přes wrangler CLI:
+#
+#   npx wrangler secret put SUPABASE_URL
+#   npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+#   npx wrangler secret put RESEND_API_KEY
+#   npx wrangler secret put FROM_EMAIL
+#   npx wrangler secret put APP_URL
+#   npx wrangler secret put MANUAL_TRIGGER_KEY
+#
+# Detailní postup viz README.md
