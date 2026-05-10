@@ -340,15 +340,6 @@ For each document (STK / insurance / vignette):
 
 ---
 
-## Roadmap
-
-- [ ] Service interval reminders (oil change every 15 000 km, etc.)
-- [ ] Receipt photo attachments via Supabase Storage
-- [ ] Multi-driver / shared-fleet mode
-- [ ] PWA offline support
-- [ ] Custom domain + branded `noreply@…` sender
-- [ ] Mobile push notifications (FCM)
-- [ ] i18n: English UI
 
 ---
 
