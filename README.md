@@ -1,306 +1,374 @@
-# 🚗 Auto monitoring — deploy guide
+# 🚗 Auto Monitoring
 
-Mobilní web aplikace pro:
-- **Kalkulátor cest** (úseky + mezitankování, plná → plná, automatický výpočet spotřeby)
-- **Přehled** (filtry, KPI dashboard, grafy, CSV export)
-- **Vozidla** (STK, pojištění, dálniční známky)
+> Multi-tenant web app for managing a personal vehicle fleet, tracking document expiration dates, and calculating trip costs — with automated email reminders.
 
-Postaveno: **React 18 + Vite + Tailwind + Recharts + Supabase**.
+[![Live Demo](https://img.shields.io/badge/demo-online-success)](https://auto-monitoring.pages.dev)
+[![Stack](https://img.shields.io/badge/stack-React%20%2B%20Supabase%20%2B%20Cloudflare-blue)]()
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
----
-
-## 📋 Co tě čeká
-
-Tři kroky, dohromady cca **20–30 minut**:
-
-1. ✅ [Supabase](#1-supabase-databáze--auth) — DB + autentizace
-2. ✅ [GitHub](#2-github-zdrojový-kód) — repo s kódem
-3. ✅ [Cloudflare Pages](#3-cloudflare-pages-publikace) — deploy + auto-deploy při každém push
-
-**Volitelně** (~15 min):
-
-4. 🔔 [Notifikační e-maily](#4-notifikace-na-stk--volitelné) — Cloudflare Worker pošle připomínku 30 a 7 dní před vypršením STK / pojištění / dálničky
+**🌐 Live demo:** https://auto-monitoring.pages.dev
 
 ---
 
-## 1. Supabase (databáze + auth)
+## What it does
 
-### 1.1 Vytvoření projektu
-1. Jdi na [supabase.com](https://supabase.com) → **Start your project** → přihlas se GitHubem
-2. **New project**:
-   - **Name**: `cestak` (nebo jakkoliv)
-   - **Database Password**: vygeneruj a ulož na bezpečné místo (do password manageru)
-   - **Region**: `Frankfurt (eu-central-1)` (nejblíž ČR)
-3. Klikni **Create** a počkej ~2 min, než se projekt vytvoří
+Auto Monitoring is a personal vehicle management tool that solves three real-world problems:
 
-### 1.2 Vytvoření tabulek
-Po nastartování projektu jdi na **SQL Editor → New query**, vlož obsah souboru `supabase/schema.sql` (najdeš ho v repu) a stiskni **Run**.
+1. **Trip cost calculator** — split fuel expenses among passengers, handle multiple refuelings per trip, support multi-currency (CZK/EUR), live exchange rate from the Czech National Bank.
+2. **Document expiration tracking** — keep tabs on STK (Czech technical inspection), liability insurance, and highway vignette renewals. Just enter the issue date — the app auto-calculates expiration based on Czech regulations (STK +2y for cars, +4y for trailers; insurance +1y; vignette +1y).
+3. **Automated email reminders** — receive proactive notifications **30 and 7 days** before any document expires (configurable). A daily cron scans every user's data and dispatches summary emails.
 
-Toto vytvoří jednu tabulku `user_data` (key/value úložiště) s **Row Level Security** — každý uživatel uvidí pouze svoje řádky.
-
-### 1.3 Nastavení autentizace
-**Authentication → Providers → Email**:
-- **Enable** ✓
-- Pro hladší testování si vypni `Confirm email` (Authentication → Settings → User signups), jinak musí každý nový uživatel kliknout potvrzovací link v e-mailu
-
-### 1.4 Získání API klíčů
-**Project Settings → API**:
-- Zkopíruj `Project URL` (např. `https://xxxxx.supabase.co`)
-- Zkopíruj `anon` / `public` klíč (`eyJh…`)
-
-> ⚠️ **NEPOUŽÍVEJ** `service_role` klíč v klientovi! Ten umí všechno bez RLS — jen pro server side. Tady stačí `anon`, RLS politiky chrání data.
+The app is **multi-tenant**: each user has their own private fleet, isolated via Postgres Row-Level Security. No shared data, no cross-user leaks.
 
 ---
 
-## 2. GitHub (zdrojový kód)
+## Features
 
-### 2.1 Vytvoř repo
-[github.com/new](https://github.com/new) → název např. `cestak` → **Create repository**.
+| Feature | Details |
+|---------|---------|
+| 🛣️ **Trip calculator** | Multiple route segments, mid-trip top-ups, per-passenger cost split, EUR/CZK conversion with cached CNB rate |
+| 🚗 **Vehicle fleet** | Add cars and trailers, configure STK validity (2 or 4 years), toggle vignette tracking |
+| 📅 **Expiration tracking** | Color-coded warnings (`Zbývá X dní`), one-click document update via inline modal |
+| 📊 **Dashboard** | KPI cards, monthly trends, top 10 trips, fuel-type pie chart, per-vehicle breakdown |
+| 📥 **CSV export** | Filtered trip history exportable to CSV (Czech format with `;` separator and BOM for Excel) |
+| 📧 **Email notifications** | Configurable thresholds (default 30 + 7 days), per-document-type opt-out, sent via Resend |
+| 🔐 **Auth** | Email/password or passwordless magic link (Supabase Auth) |
+| 📱 **Mobile-first** | Optimized for phones — every screen is touch-friendly |
+| 💾 **Auto-save** | Every change persists to Postgres in real time |
+| 🇨🇿 **Czech UI** | Built for the Czech market with localized terms (STK, dálniční známka, etc.) |
 
-### 2.2 Push kódu
-Z extrahovaného `cestak-deploy.zip`:
+---
 
-```bash
-cd cestak
-git init
-git add .
-git commit -m "init: cestak app"
-git branch -M main
-git remote add origin https://github.com/<USERNAME>/cestak.git
-git push -u origin main
+## Architecture
+
+### High-level system diagram
+
+```mermaid
+flowchart LR
+    User([👤 User])
+    Browser[🌐 Browser SPA<br/>React + Vite]
+    Pages[☁️ Cloudflare Pages<br/>Edge static hosting]
+    Supabase[(🐘 Supabase<br/>Postgres + Auth + RLS)]
+    Worker[⚙️ Cloudflare Worker<br/>Cron 07:00 UTC daily]
+    Resend[📧 Resend API]
+    Email([📨 User inbox])
+
+    User -->|HTTPS| Browser
+    Browser -->|served from edge| Pages
+    Browser <-->|JWT-authed REST| Supabase
+    Worker <-->|service-role key| Supabase
+    Worker -->|HTTP POST| Resend
+    Resend -->|SMTP| Email
+
+    classDef cf fill:#f38020,color:#fff,stroke:#a85a14
+    classDef db fill:#3ecf8e,color:#fff,stroke:#1a8a55
+    classDef ext fill:#6366f1,color:#fff,stroke:#3730a3
+    class Pages,Worker cf
+    class Supabase db
+    class Resend ext
 ```
 
-> **Soubory `.env` a `node_modules` se nepushují** (jsou v `.gitignore`). Tvoje Supabase klíče zadáš v Cloudflare dashboardu, kód je tedy bezpečně public.
+### Tech stack
 
-### 2.3 Lokální dev (volitelné)
+**Frontend**
+- ⚛️ **React 18** — component model with hooks
+- ⚡ **Vite** — dev server + production build
+- 🎨 **TailwindCSS** — utility-first styling
+- 📊 **Recharts** — D3-based charting
+- 🎯 **Lucide React** — icon set
+- 🌗 **Bebas Neue + DM Sans** — typography (Google Fonts)
+
+**Backend / Data**
+- 🐘 **Supabase Postgres** — primary store, all user data
+- 🔐 **Supabase Auth** — email/password + OTP magic links
+- 🛡️ **Row-Level Security** — strict per-user data isolation, enforced by Postgres
+- 📦 **Key-value pattern** in `user_data` — flexible schema-less storage per user
+
+**Infrastructure**
+- ☁️ **Cloudflare Pages** — global edge hosting + GitHub auto-deploy on push
+- ⚙️ **Cloudflare Workers** — serverless cron with `0 7 * * *` schedule
+- 📧 **Resend** — transactional email delivery
+- 🐙 **GitHub** — source control + CI trigger
+- 🔧 **Wrangler** — Cloudflare CLI for Worker deploys
+
+---
+
+## Data flows
+
+### 1) User session bootstrap
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant B as Browser (React)
+    participant SA as Supabase Auth
+    participant SD as Supabase DB
+
+    U->>B: Open auto-monitoring.pages.dev
+    B->>SA: getSession()
+    alt No session
+        B->>U: Show AuthScreen
+        U->>B: Enter email / password
+        B->>SA: signInWithPassword()
+        SA-->>B: JWT
+    end
+    B->>SD: SELECT * FROM user_data WHERE user_id = auth.uid()
+    Note over SD: RLS auto-filters by JWT
+    SD-->>B: Vehicles, trips, settings
+    B->>U: Render dashboard
+```
+
+### 2) Trip auto-save
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant B as Browser
+    participant SD as Supabase DB
+
+    U->>B: Edit trip segment
+    B->>B: Update React state
+    B->>B: Debounce (300ms)
+    B->>SD: UPSERT user_data SET key='current-trip', value=JSON
+    SD-->>B: 200 OK
+```
+
+### 3) Daily notification cron
+
+```mermaid
+sequenceDiagram
+    participant CF as Cloudflare Cron (07:00 UTC)
+    participant W as Worker
+    participant SD as Supabase DB
+    participant R as Resend
+    participant E as User inbox
+
+    CF->>W: Trigger scheduled handler
+    W->>SD: SELECT * FROM user_data WHERE key = 'vehicles-data'
+    SD-->>W: All users' vehicle data
+    loop Per user
+        W->>SD: Fetch vehicles-list, notification-settings
+        W->>W: For each doc → daysLeft = (expiry - today)
+        alt daysLeft within ±1 of threshold (30, 7)
+            W->>SD: Check notifications_sent (dedup)
+            alt Not yet sent for this expiry
+                W->>R: POST /emails {to, subject, html}
+                R->>E: Deliver email
+                W->>SD: INSERT notifications_sent
+            end
+        end
+    end
+```
+
+---
+
+## Database schema
+
+```sql
+-- Generic key-value store: one row per (user, key) tuple
+CREATE TABLE user_data (
+  user_id    UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  key        TEXT NOT NULL,
+  value      JSONB NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (user_id, key)
+);
+
+-- RLS: each user only sees/edits their own rows
+ALTER TABLE user_data ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "user_data_isolation" ON user_data
+  FOR ALL USING (auth.uid() = user_id);
+
+-- Deduplication table for the notification worker
+CREATE TABLE notifications_sent (
+  id          BIGSERIAL PRIMARY KEY,
+  user_id     UUID NOT NULL,
+  vehicle_id  TEXT NOT NULL,
+  doc_type    TEXT NOT NULL,
+  expiry_date DATE NOT NULL,
+  days_ahead  INT  NOT NULL,
+  sent_at     TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id, vehicle_id, doc_type, expiry_date, days_ahead)
+);
+```
+
+### Key conventions in `user_data`
+
+| Key | Value shape | Purpose |
+|-----|-------------|---------|
+| `vehicles-list` | `[{id, name, type, defaultFuel, stkYears, ...}]` | Fleet metadata (one array per user) |
+| `vehicles-data` | `{vehicleId: {stk: {from}, insurance: {from}, vignette: {from}}}` | Document issue dates |
+| `notification-settings` | `{enabled, email, daysBefore: [30, 7], docTypes: {...}}` | User preferences |
+| `current-trip` | `{items: [...], participants}` | Active calculator state |
+| `saved-trips` | `[{id, name, items, ...}]` | Trip history |
+| `eur-rate-cache` | `{rate, fetchedAt}` | CNB exchange-rate cache |
+
+---
+
+## Project structure
+
+```
+auto-monitoring/
+├── src/                       # React frontend (single-file SPA)
+│   ├── App.jsx                # ~3500 lines: state, components, render
+│   ├── supabase.js            # Supabase client + storage abstraction
+│   ├── main.jsx               # ReactDOM.createRoot bootstrap
+│   └── index.css              # Tailwind directives
+├── supabase/
+│   └── schema.sql             # DB schema + RLS policies
+├── worker/                    # Cloudflare Worker (notifications)
+│   ├── src/
+│   │   ├── index.js           # Cron handler + /run endpoint
+│   │   └── notifier.js        # Core logic: scan → match → send
+│   ├── wrangler.toml          # Worker config + cron trigger
+│   └── package.json
+├── index.html                 # Vite entry
+├── vite.config.js
+├── tailwind.config.js
+├── postcss.config.js
+├── package.json
+├── README.md                  # This file
+├── DEPLOYMENT.md              # Detailed deployment guide (Czech)
+├── CHECKLIST.md               # Quick deployment checklist (Czech)
+└── LICENSE                    # MIT
+```
+
+---
+
+## Local development
+
+### Prerequisites
+- Node.js 18+
+- npm
+- A free Supabase project
+
+### Setup
+
 ```bash
-cp .env.example .env
-# Otevři .env a vyplň Supabase URL + anon klíč
+# Clone
+git clone https://github.com/JakubT91/auto-monitoring.git
+cd auto-monitoring
+
+# Install
 npm install
+
+# Configure environment
+cp .env.example .env
+# Edit .env:
+#   VITE_SUPABASE_URL=https://your-project.supabase.co
+#   VITE_SUPABASE_ANON_KEY=sb_publishable_...
+
+# Initialize database
+# → Open Supabase SQL Editor, paste contents of supabase/schema.sql, Run
+
+# Run dev server
 npm run dev
-# Otevře se na http://localhost:5173
+# Opens http://localhost:5173
+```
+
+### Build
+
+```bash
+npm run build      # production build → dist/
+npm run preview    # serve dist/ locally
 ```
 
 ---
 
-## 3. Cloudflare Pages (publikace)
+## Deployment
 
-### 3.1 Připoj GitHub
-1. [dash.cloudflare.com](https://dash.cloudflare.com) → **Workers & Pages** → **Create** → **Pages → Connect to Git**
-2. Authorizuj Cloudflare pro tvůj GitHub účet → vyber repo `cestak`
+Production runs on three free-tier services and takes ~10 minutes end-to-end:
 
-### 3.2 Build nastavení
-| Pole | Hodnota |
-|---|---|
-| **Project name** | `cestak` (bude pak `cestak.pages.dev`) |
-| **Production branch** | `main` |
-| **Framework preset** | `Vite` |
-| **Build command** | `npm run build` |
-| **Build output directory** | `dist` |
-| **Root directory** | `/` (default) |
+1. **Supabase** — managed Postgres + Auth
+2. **Cloudflare Pages** — static hosting with auto-deploy on `main` branch push
+3. **Cloudflare Worker + Resend** — daily cron + email delivery
 
-### 3.3 Environment variables
-**Klíčový krok!** Klikni na **Variables and Secrets** a přidej:
+📋 **See [`CHECKLIST.md`](./CHECKLIST.md) for the step-by-step deployment guide** (in Czech).
 
-| Název | Hodnota |
-|---|---|
-| `VITE_SUPABASE_URL` | tvoje URL ze Supabase (kroku 1.4) |
-| `VITE_SUPABASE_ANON_KEY` | tvůj anon key |
+### Required environment variables
 
-Zaškrtni je pro **Production** (a klidně i Preview).
+**Cloudflare Pages** (frontend):
+- `VITE_SUPABASE_URL` — your Supabase project URL
+- `VITE_SUPABASE_ANON_KEY` — Supabase publishable key (safe for browser, RLS protects data)
 
-### 3.4 Save and Deploy
-Cloudflare začne stavět. Po ~2 min uvidíš **Success** a aplikace běží na:
-
-```
-https://cestak.pages.dev
-```
-
-### 3.5 Auto-deploy ✅
-Od teď každý `git push` na `main` automaticky vyvolá rebuild a redeploy. Žádné GitHub Actions netřeba.
-
-### 3.6 Vlastní doména (volitelné)
-**Custom domains → Set up a custom domain** → zadej třeba `cesta.tvojedomena.cz`. Cloudflare ti řekne, jaký DNS záznam přidat.
-
-Pokud doména **už používá Cloudflare** jako DNS, je to jeden klik. SSL certifikát (HTTPS) se nastaví automaticky.
+**Cloudflare Worker secrets** (notifications backend):
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` — ⚠️ secret, bypasses RLS for the cron scan
+- `RESEND_API_KEY`
+- `FROM_EMAIL` — e.g. `Auto monitoring <onboarding@resend.dev>`
+- `APP_URL` — e.g. `https://auto-monitoring.pages.dev`
+- `MANUAL_TRIGGER_KEY` — secret for the manual `/run?key=...` endpoint
 
 ---
 
-## 4. Notifikace na STK (volitelné)
+## Security model
 
-Aplikace umí každý den projít termíny všech uživatelů a poslat e-mailovou
-připomínku **30 dní** a **7 dní** před vypršením STK / pojištění / dálničky.
-
-Implementováno jako separátní **Cloudflare Worker** s denním cron triggerem,
-e-maily se posílají přes **Resend** (zdarma 3000 mailů/měsíc).
-
-📂 **Detailní setup:** [`worker/README.md`](worker/README.md)
-
-Stručně:
-1. Vytvoř Resend účet → získej API klíč
-2. V Supabase si vezmi **service_role** klíč (Settings → API)
-3. `cd worker && npm install && npx wrangler login`
-4. Nastav 6 secrets přes `npx wrangler secret put …`
-5. `npx wrangler deploy`
-
-Worker poběží denně v 7:00 UTC (8 / 9 hod CZ).
+| Layer | Mechanism |
+|-------|-----------|
+| **Authentication** | Supabase Auth (JWT, bcrypt-hashed passwords, OTP magic links) |
+| **Authorization** | Postgres RLS enforces `auth.uid() = user_id` on every query, every row |
+| **Frontend secrets** | Only the **publishable** Supabase key reaches the browser; RLS protects data even if the key leaks |
+| **Worker secrets** | The **service-role** key lives only in Cloudflare Worker secrets, never in source or frontend |
+| **Cron access** | `/run` endpoint requires `MANUAL_TRIGGER_KEY` query param |
+| **Email rate limit** | Resend free tier caps at 100 emails/day per sender — sufficient for personal use |
 
 ---
 
-## 🔐 Autentizace — 3 způsoby
+## How the notification worker decides
 
-Aplikace ti dává v login obrazovce na výběr:
+For each document (STK / insurance / vignette):
 
-| Mode | Jak funguje | Kdy použít |
-|---|---|---|
-| **Přihlášení** | E-mail + heslo | Standardní login s vlastním heslem |
-| **Registrace** | E-mail + heslo (nový účet) | Při prvním přihlášení |
-| **E-mail link** | Pošle ti odkaz e-mailem, klikneš = jsi přihlášen | Bez hesla, nejjednodušší UX |
-
-**Doporučeno:** *E-mail link* — bezheslový přístup. Po prvním kliknutí na link
-se tvoje session uloží a další otevření aplikace už login nevyžaduje.
-
-> ⚠️ Magic link i potvrzovací e-maily posílá Supabase z vlastního SMTP, který je
-> rate-limitovaný (~3 maily/hod ve free tieru). Pro produkci doporučuju nakonfigurovat
-> vlastní SMTP přes Resend: **Supabase → Settings → Authentication → SMTP Settings**.
+1. Compute expiration: `expiryDate = issueDate + statutoryYears`
+   - Cars: STK +2y, Trailers: STK +4y, Insurance/Vignette: +1y
+2. Compute `daysLeft = round((expiryDate − today) / 86_400_000)`
+3. For each threshold in `settings.daysBefore` (default `[30, 7]`):
+   - If `|daysLeft − threshold| ≤ 1`, queue a notification
+   - The ±1-day tolerance handles timezone offsets and missed cron days
+4. Before sending, check `notifications_sent` — skip if already delivered for this `(user, vehicle, doc, expiry, threshold)` tuple
+5. Send **one summary email** per user per run (multiple expiring docs are bundled into a single mail)
 
 ---
 
-## ⚙️ Správa vozového parku
+## What I learned building this
 
-Po prvním přihlášení máš **prázdný park** — žádná defaultní vozidla.
-Vytvoříš si je sám/sama tam, kde je potřebuješ.
-
-### 🚗 Z Kalkulátoru (cesty s palivem)
-1. Otevři záložku **Kalkulátor** → klikni na **„Vytvoř první vozidlo"** (nebo „+ Přidat vozidlo" nahoře)
-2. Vyplň: **název**, **počáteční stav tachometru** (použije se jako výchozí *km Před* u prvního úseku), **palivo** (Benzín / Nafta)
-3. Vozidlo se ti automaticky objeví **i v Vozidlech** (s prázdnými termíny — doplníš později)
-
-### 🛠️ Z Vozidel (jen tracking termínů)
-V záložce **Vozidla** máš dvě tlačítka:
-- **„+ Přidat vozidlo"** — pro auta, která chceš jen sledovat (STK / pojistka / dálnička), ne v kalkulátoru
-  - Pole: název, palivo, dálnička (toggle), STK platnost (2 / 4 roky), počáteční datumy
-- **„+ Přidat vozík"** — vozíky bez paliva a bez dálničky
-  - Pole: název, STK platnost (2 / 4 roky), počáteční datumy STK + pojištění
-
-> **Klíčové:** Vozidlo přidané v Kalkulátoru se objeví i ve Vozidlech. Vozidlo přidané ve Vozidlech (jen tracking) se v kalkulátoru **neobjeví** — je čistě pro hlídání termínů.
-
-### 🗑️ Smazání vozidla
-V kartě vozidla v záložce Vozidla klikni na červenou ikonu koše. Smaže se i s termíny.
+- **Multi-tenant from day one is much cheaper than retrofitting it.** I started with hard-coded vehicle defaults and had to refactor the entire data model when adding auth.
+- **Supabase RLS is genuinely magical** — once policies are written, the frontend never has to think about user isolation again. Queries just work, secured at the DB layer.
+- **Cloudflare's free tier is wild.** Pages with auto-deploy from GitHub, Workers with cron, edge cache — all $0/month.
+- **Cron edge cases bite.** Initially the worker only matched expirations exactly N days ahead. A timezone offset of just a few hours meant docs were skipped on the boundary day. ±1-day tolerance + a dedup table fixed it cleanly.
+- **Sandboxed iframes hate `<form>`.** Refactored three modals from `<form onSubmit>` to plain `<div>` + `onClick` to make the app preview-able in restricted contexts.
+- **A flexible JSONB key-value table beats designing 6 different schemas upfront** when you're still iterating on features. Trade-off: less SQL-friendly analytics later.
 
 ---
 
-## 🔔 Notifikační nastavení
+## Roadmap
 
-V záložce **Vozidla** máš nahoře sbalený panel **„Notifikace"**. Klepnutím rozbalíš:
-
-| Pole | Význam |
-|---|---|
-| **Master switch** | Zapnout / vypnout všechny notifikace |
-| **Kam posílat** | E-mail, na který chodí notifikace (prázdné = přihlašovací) |
-| **Kolik dní předem** | Multi-select: 60 / 30 / 14 / 7 / 3 / 1 dní (default 30+7) |
-| **Sledované doklady** | Toggle per typ: STK / Pojištění / Dálniční známka |
-
-Worker při denním běhu načte tato nastavení **per uživatel** a posílá e-maily
-podle preferencí. Adresa z `Kam posílat` má prioritu před auth e-mailem.
+- [ ] Service interval reminders (oil change every 15 000 km, etc.)
+- [ ] Receipt photo attachments via Supabase Storage
+- [ ] Multi-driver / shared-fleet mode
+- [ ] PWA offline support
+- [ ] Custom domain + branded `noreply@…` sender
+- [ ] Mobile push notifications (FCM)
+- [ ] i18n: English UI
 
 ---
 
-## 🔧 Jak to celé funguje
+## Credits
 
-```
-┌─────────────────┐
-│  Tvůj browser   │
-└────────┬────────┘
-         │ HTTPS
-         ▼
-┌─────────────────┐         ┌──────────────┐
-│ Cloudflare Pages│         │   Supabase   │
-│   (statický     │◀───────▶│  Auth + DB   │
-│    React build) │  REST   │   + RLS      │
-└────────┬────────┘         └──────────────┘
-         ▲
-         │ git push
-         │
-┌────────┴────────┐
-│     GitHub      │
-└─────────────────┘
-```
+Built with ❤️ in the Czech Republic.
 
-- **Cloudflare Pages** servíruje statický React build z CDN edge serverů (rychlé pro celý svět)
-- **Supabase** drží data + autentizaci, přístup přes JS klient
-- **Row Level Security** zajistí, že každý uvidí jen svoje data
-- **GitHub** je single source of truth — push spustí auto-deploy
+- **React, Vite, Tailwind, Recharts, Lucide** — open-source ecosystems
+- **Supabase** — backend platform
+- **Cloudflare Pages + Workers** — hosting & edge compute
+- **Resend** — email delivery
+- **Czech National Bank** — public exchange-rate API
 
 ---
 
-## 🛠️ Troubleshooting
+## License
 
-**„Bílá obrazovka po deploy"**
-Otevři DevTools → Console. Většinou problém je `VITE_SUPABASE_URL` nebo `VITE_SUPABASE_ANON_KEY` špatně zadané v Cloudflare. **Po změně env proměnných musíš redeploynout** (Pages → Deployments → Retry deployment).
-
-**„Login nefunguje, vidím chybu"**
-- Ověř, že **Email** provider je v Supabase **enabled**.
-- Pokud máš zapnuté `Confirm email`, podívej se do schránky a klikni potvrzovací link.
-
-**„Vidím cizí data" / „Nevidím svá data"**
-RLS je špatně nastavené. Spusť `supabase/schema.sql` znovu — politiky by se měly dropnout a vytvořit znovu.
-
-**„Po nové cestě se nic neuloží"**
-- DevTools → Network → filtruj `supabase`. Hledej 401/403 → uživatel není přihlášený nebo RLS odmítá.
-- DevTools → Application → Storage → ověř, že `sb-...-auth-token` cookie / localStorage existuje.
-
-**„Chci zálohu DB"**
-Supabase: Settings → Database → **Backups**. Free tier má daily backups (7 dní) automaticky.
+MIT — see [`LICENSE`](./LICENSE) for full text.
 
 ---
 
-## 📂 Struktura projektu
-
-```
-cestak/
-├─ src/
-│  ├─ App.jsx          ← celá aplikace (~2700 řádek)
-│  ├─ supabase.js      ← klient + storage wrapper s Supabase + fallback
-│  ├─ main.jsx         ← React entry
-│  └─ index.css        ← Tailwind direktivy
-├─ supabase/
-│  └─ schema.sql       ← spustit jednou v Supabase SQL Editoru
-├─ worker/             ← VOLITELNÉ — notifikační worker
-│  ├─ src/
-│  │  ├─ index.js      ← cron + manual trigger endpoint
-│  │  └─ notifier.js   ← logika hledání expirací + odesílání mailů
-│  ├─ wrangler.toml    ← cron schedule + bindings
-│  ├─ package.json
-│  └─ README.md        ← samostatný setup guide pro worker
-├─ index.html
-├─ package.json
-├─ vite.config.js
-├─ tailwind.config.js
-├─ postcss.config.js
-├─ .env.example        ← šablona env vars
-├─ .env                ← (gitignored) lokální dev
-└─ README.md           ← tenhle soubor
-```
-
----
-
-## 💸 Náklady
-
-Pro osobní použití **vše zdarma**:
-- **Supabase Free**: 500 MB databáze, 50 000 měsíčních autentizací, 2 GB egress/měsíc
-- **Cloudflare Pages Free**: 500 buildů/měsíc, neomezeně requestů, neomezený bandwidth
-- **GitHub Free**: privátní + veřejné repos zdarma
-
-Pokud bys aplikaci dal stovkám lidí, narazíš na Supabase free tier limit a budeš platit ~$25/měsíc za Pro.
-
----
-
-## 🚀 Co dál
-
-- **PWA** (offline, instalovatelná na home screen): přidej `vite-plugin-pwa`
-- **OAuth** (Google, Apple, GitHub login): Supabase má hotové, stačí enable v providers
-- **Real-time sync mezi zařízeními**: Supabase Realtime — kdykoli změníš cestu na PC, mobilu se aktualizuje sám
-- **Sdílení cest**: přidat sloupec `shared = true` a public read policy
-
-Hodně štěstí! 🚗
+**🔗 Live demo:** https://auto-monitoring.pages.dev  
+**📦 Source:** https://github.com/JakubT91/auto-monitoring
