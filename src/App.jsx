@@ -6,7 +6,7 @@ import {
   X, Check, Gauge, MapPin, Coins, Route, Link2,
   Sparkles, ArrowRightLeft,
   Save, BarChart3, Download, Filter, ChevronRight, Inbox, LogOut,
-  Settings, Bell, AlertCircle
+  Bell, AlertCircle
 } from 'lucide-react';
 import {
   BarChart, Bar, PieChart, Pie, Cell,
@@ -85,6 +85,30 @@ function addYearsISO(isoDate, years) {
 function docsForVehicle(vehicle) {
   if (vehicle.type === 'trailer') return DOC_TYPES.filter((d) => d.key !== 'vignette');
   return DOC_TYPES;
+}
+
+// Migrace staršího formátu dokladů { dateFrom, dateTo } → { from }.
+// Zobrazení, EditDocModal i Worker pracují výhradně s "from"; tahle funkce
+// jednorázově sjednotí případná data uložená dřívější verzí přidávacích formulářů,
+// aby se „neviditelné" počáteční termíny zase objevily a začaly chodit notifikace.
+function normalizeVehiclesData(data) {
+  if (!data || typeof data !== 'object') return { data: data || {}, changed: false };
+  let changed = false;
+  const out = {};
+  for (const [vehicleId, docs] of Object.entries(data)) {
+    if (!docs || typeof docs !== 'object') { out[vehicleId] = docs; continue; }
+    const nextDocs = {};
+    for (const [docType, entry] of Object.entries(docs)) {
+      if (entry && typeof entry === 'object' && entry.from === undefined && entry.dateFrom !== undefined) {
+        nextDocs[docType] = { from: entry.dateFrom || '' };
+        changed = true;
+      } else {
+        nextDocs[docType] = entry;
+      }
+    }
+    out[vehicleId] = nextDocs;
+  }
+  return { data: out, changed };
 }
 
 /* ============================================================
@@ -397,7 +421,12 @@ function CestakApp({ authUser }) {
     (async () => {
       try {
         const r = await storage.get('vehicles-data');
-        if (r) setVehiclesData(JSON.parse(r.value));
+        if (r) {
+          const { data: normalized, changed } = normalizeVehiclesData(JSON.parse(r.value));
+          setVehiclesData(normalized);
+          // Self-healing: pokud jsme našli starý formát, rovnou ho přepiš zpět do storage.
+          if (changed) storage.set('vehicles-data', JSON.stringify(normalized)).catch(() => {});
+        }
       } catch (e) { /* nic uloženo */ }
 
       // ADMIN: dynamický seznam vozidel
@@ -497,64 +526,15 @@ function CestakApp({ authUser }) {
     return id;
   };
 
-  // Z Vozidel (auto): pouze tracking, počáteční datumy předvyplněné.
-  const addTrackingVehicle = ({ name, defaultFuel, hasVignette, stkYears, initialStk, initialInsurance, initialVignette }) => {
-    const id = generateVehicleId(name, vehicles.map((v) => v.id));
-    const newVeh = {
-      id,
-      name: name.trim(),
-      type: 'car',
-      defaultFuel,
-      inCalculator: false,
-      hasVignette,
-      stkYears: parseInt(stkYears, 10),
-    };
-    setVehicles((prev) => [...prev, newVeh]);
-    const docs = {};
-    if (initialStk) docs.stk = { dateFrom: initialStk, dateTo: addYearsISO(initialStk, parseInt(stkYears, 10)) };
-    if (initialInsurance) docs.insurance = { dateFrom: initialInsurance, dateTo: addYearsISO(initialInsurance, 1) };
-    if (hasVignette && initialVignette) docs.vignette = { dateFrom: initialVignette, dateTo: addYearsISO(initialVignette, 1) };
-    saveVehiclesData({ ...vehiclesData, [id]: docs });
-    return id;
-  };
-
-  // Z Vozidel (vozík): pouze tracking, bez paliva, bez dálničky.
-  const addTrailer = ({ name, stkYears, initialStk, initialInsurance }) => {
-    const id = generateVehicleId(name, vehicles.map((v) => v.id));
-    const newVeh = {
-      id,
-      name: name.trim(),
-      type: 'trailer',
-      inCalculator: false,
-      hasVignette: false,
-      stkYears: parseInt(stkYears, 10),
-    };
-    setVehicles((prev) => [...prev, newVeh]);
-    const docs = {};
-    if (initialStk) docs.stk = { dateFrom: initialStk, dateTo: addYearsISO(initialStk, parseInt(stkYears, 10)) };
-    if (initialInsurance) docs.insurance = { dateFrom: initialInsurance, dateTo: addYearsISO(initialInsurance, 1) };
-    saveVehiclesData({ ...vehiclesData, [id]: docs });
-    return id;
-  };
-
-  // Smaže vozidlo (i jeho doklady)
-  const deleteVehicle = (id) => {
-    setVehicles((prev) => prev.filter((v) => v.id !== id));
-    const next = { ...vehiclesData };
-    delete next[id];
-    saveVehiclesData(next);
-    if (activeVehicleId === id) {
-      const remaining = vehicles.filter((v) => v.id !== id && v.inCalculator);
-      setActiveVehicleId(remaining[0]?.id || null);
-    }
-  };
-
-  // Po hydrataci, pokud existuje aspoň jedno vozidlo v kalkulátoru a aktivní není nastaveno, vyber první
+  // Po hydrataci drž aktivní vozidlo validní: když není nastavené, nebo ukazuje
+  // na vozidlo, které už neexistuje / není v kalkulátoru (např. po smazání),
+  // přepni na první dostupné — nebo na null, pokud žádné kalkulátorové není.
   useEffect(() => {
     if (!hydrated) return;
-    if (activeVehicleId === null) {
+    const activeValid = vehicles.some((v) => v.id === activeVehicleId && v.inCalculator);
+    if (!activeValid) {
       const first = vehicles.find((v) => v.inCalculator);
-      if (first) setActiveVehicleId(first.id);
+      setActiveVehicleId(first ? first.id : null);
     }
   }, [hydrated, vehicles, activeVehicleId]);
 
@@ -1823,13 +1803,12 @@ function VehiclesView({
       stkYears: parseInt(data.stkYears, 10),
     };
     setVehicles([...vehicles, newVeh]);
+    // Ukládáme jen "od" — datum konce platnosti se vždy dopočítává (viz calcExpiration).
     const docs = {};
-    if (data.initialStk)
-      docs.stk = { dateFrom: data.initialStk, dateTo: addYearsISO(data.initialStk, parseInt(data.stkYears, 10)) };
-    if (data.initialInsurance)
-      docs.insurance = { dateFrom: data.initialInsurance, dateTo: addYearsISO(data.initialInsurance, 1) };
+    if (data.initialStk)       docs.stk       = { from: data.initialStk };
+    if (data.initialInsurance) docs.insurance = { from: data.initialInsurance };
     if (data.hasVignette && data.initialVignette)
-      docs.vignette = { dateFrom: data.initialVignette, dateTo: addYearsISO(data.initialVignette, 1) };
+      docs.vignette = { from: data.initialVignette };
     saveVehiclesData({ ...vehiclesData, [id]: docs });
     setShowAddVehicle(false);
   };
@@ -1845,11 +1824,10 @@ function VehiclesView({
       stkYears: parseInt(data.stkYears, 10),
     };
     setVehicles([...vehicles, newVeh]);
+    // Ukládáme jen "od" — datum konce platnosti se vždy dopočítává (viz calcExpiration).
     const docs = {};
-    if (data.initialStk)
-      docs.stk = { dateFrom: data.initialStk, dateTo: addYearsISO(data.initialStk, parseInt(data.stkYears, 10)) };
-    if (data.initialInsurance)
-      docs.insurance = { dateFrom: data.initialInsurance, dateTo: addYearsISO(data.initialInsurance, 1) };
+    if (data.initialStk)       docs.stk       = { from: data.initialStk };
+    if (data.initialInsurance) docs.insurance = { from: data.initialInsurance };
     saveVehiclesData({ ...vehiclesData, [id]: docs });
     setShowAddTrailer(false);
   };
@@ -2814,7 +2792,7 @@ function StatsView({ vehicles, savedTrips, deleteSavedTrip, reopenTrip, eurRate 
   const usedVehicleIds = useMemo(() => {
     const ids = new Set(savedTrips.map((t) => t.vehicleId));
     return vehicles.filter((v) => ids.has(v.id)).map((v) => v.id);
-  }, [savedTrips]);
+  }, [savedTrips, vehicles]);
 
   // Filtr vozidel — výchozí stav: všechna vybraná
   const [selectedVehicleIds, setSelectedVehicleIds] = useState([]);
@@ -2903,7 +2881,7 @@ function StatsView({ vehicles, savedTrips, deleteSavedTrip, reopenTrip, eurRate 
         km:   Math.round(v.km),
       };
     }).sort((a, b) => b.km - a.km);
-  }, [aggregate]);
+  }, [aggregate, vehicles]);
 
   // Měsíční agregace pro time-series graf
   const monthlyData = useMemo(() => {

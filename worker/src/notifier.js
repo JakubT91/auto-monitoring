@@ -46,8 +46,36 @@ async function getUserEmail(env, userId) {
   return u.email || null;
 }
 
+// Množina už odeslaných notifikací uživatele (klíč: vehicle|doc|expiry|threshold).
+// Vrací null, když se tabulku nepodaří přečíst — volající pak raději pošle (fail-open),
+// aby výpadek čtení nikdy nezpůsobil zameškanou připomínku.
+async function getSentKeys(env, userId) {
+  const res = await sb(env, 'GET',
+    `/rest/v1/notifications_sent?user_id=eq.${userId}&select=vehicle_id,doc_type,expiration_date,notification_type`);
+  if (!res.ok) return null;
+  const rows = await res.json();
+  return new Set(rows.map((r) => `${r.vehicle_id}|${r.doc_type}|${r.expiration_date}|${r.notification_type}`));
+}
+
+// Zaloguje odeslanou notifikaci, aby se příště (další den, v rámci ±1 dne tolerance) neposlala znovu.
+async function logSent(env, userId, e) {
+  const res = await sb(env, 'POST', '/rest/v1/notifications_sent', {
+    user_id: userId,
+    vehicle_id: e.vehicleId,
+    doc_type: e.docType,
+    expiration_date: e.expiry,
+    notification_type: String(e.daysAhead),
+  });
+  // fetch nezamítne na 4xx/5xx — stav musíme zkontrolovat ručně.
+  // 409 = řádek už existuje (unique index) → bereme jako úspěch (už je zalogováno).
+  // Jiné selhání vyhodíme, ať se objeví v summary.errors (jinak by se příště poslal duplikát).
+  if (!res.ok && res.status !== 409) {
+    throw new Error(`${res.status} ${await res.text()}`);
+  }
+}
+
 export async function runNotifications(env) {
-  const summary = { timestamp: new Date().toISOString(), users_scanned: 0, notifications_due: 0, emails_sent: 0, skipped_disabled: 0, errors: [] };
+  const summary = { timestamp: new Date().toISOString(), users_scanned: 0, notifications_due: 0, emails_sent: 0, skipped_disabled: 0, skipped_duplicate: 0, errors: [] };
   const today = new Date(); today.setUTCHours(0, 0, 0, 0);
 
   // 1) Najdi všechny usery, kteří mají vehicles-data
@@ -84,14 +112,16 @@ export async function runNotifications(env) {
       for (const docType of ['stk', 'insurance', 'vignette']) {
         if (!settings.docTypes[docType]) continue;
         const docEntry = docs[docType];
-        if (!docEntry || !docEntry.from) continue;
+        // Sjednocení formátu: starší data mohou mít "dateFrom" místo "from".
+        const fromIso = docEntry && (docEntry.from || docEntry.dateFrom);
+        if (!fromIso) continue;
 
         const years = docType === 'stk' ? (meta.stkYears || DEFAULT_YEARS.stk) : DEFAULT_YEARS[docType];
-        const expDate = calcExpiry(docEntry.from, years);
+        const expDate = calcExpiry(fromIso, years);
         if (!expDate) continue;
 
         const daysLeft = Math.round((expDate - today) / 86400000);
-        console.log('CHECK:', vehicleName, docType, 'from:', docEntry.from, 'years:', years, 'expDate:', expDate.toISOString(), 'daysLeft:', daysLeft, 'thresholds:', settings.daysBefore);
+        console.log('CHECK:', vehicleName, docType, 'from:', fromIso, 'years:', years, 'expDate:', expDate.toISOString(), 'daysLeft:', daysLeft, 'thresholds:', settings.daysBefore);
 
         for (const d of settings.daysBefore) {
           if (Math.abs(daysLeft - d) <= 1) {
@@ -103,15 +133,25 @@ export async function runNotifications(env) {
     }
 
     if (expiring.length === 0) continue;
-    summary.notifications_due += expiring.length;
-    console.log('EXPIRING for user:', expiring);
+
+    // 2b) Dedup — vynech termíny, na které už e-mail odešel (jinak by ±1 denní
+    // tolerance + denní cron poslal tutéž připomínku několik dní po sobě).
+    const sentKeys = await getSentKeys(env, userId);
+    const fresh = sentKeys
+      ? expiring.filter((e) => !sentKeys.has(`${e.vehicleId}|${e.docType}|${e.expiry}|${e.daysAhead}`))
+      : expiring; // čtení selhalo → fail-open, raději pošli
+    summary.skipped_duplicate += expiring.length - fresh.length;
+    if (fresh.length === 0) continue;
+
+    summary.notifications_due += fresh.length;
+    console.log('EXPIRING for user (fresh):', fresh);
 
     // 3) Pošli email přes Resend
-    const emailBody = expiring.map(e => `<li><b>${e.vehicleName}</b> — ${e.docLabel} vyprší ${e.expiry} (za ${e.daysLeft} dní)</li>`).join('');
+    const emailBody = fresh.map(e => `<li><b>${e.vehicleName}</b> — ${e.docLabel} vyprší ${e.expiry} (za ${e.daysLeft} dní)</li>`).join('');
     const html = `<h2>Auto monitoring — připomínka</h2><ul>${emailBody}</ul><p><a href="${env.APP_URL}">Otevřít aplikaci</a></p>`;
-    const subject = expiring.length === 1
-      ? `Auto monitoring: ${expiring[0].vehicleName} — ${expiring[0].docLabel} vyprší za ${expiring[0].daysLeft} dní`
-      : `Auto monitoring: ${expiring.length} připomínek termínů`;
+    const subject = fresh.length === 1
+      ? `Auto monitoring: ${fresh[0].vehicleName} — ${fresh[0].docLabel} vyprší za ${fresh[0].daysLeft} dní`
+      : `Auto monitoring: ${fresh.length} připomínek termínů`;
 
     const sendRes = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -121,6 +161,11 @@ export async function runNotifications(env) {
     if (sendRes.ok) {
       summary.emails_sent++;
       console.log('EMAIL SENT to', userEmail);
+      // Zaloguj až po úspěšném odeslání, aby se připomínka znovu neposílala.
+      for (const e of fresh) {
+        try { await logSent(env, userId, e); }
+        catch (err) { summary.errors.push(`Log dedup failed for ${e.vehicleId}/${e.docType}: ${err}`); }
+      }
     } else {
       summary.errors.push(`Resend failed for ${userEmail}: ${sendRes.status} ${await sendRes.text()}`);
     }

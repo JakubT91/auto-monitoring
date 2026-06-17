@@ -73,7 +73,9 @@ Reset dedup to re-test: DELETE FROM notifications_sent WHERE user_id = ''<uuid>'
 ## 10) Database
 Tables:
   user_data (user_id UUID, key TEXT, value JSONB, updated_at)
-  notifications_sent (id, user_id, vehicle_id, doc_type, expiry_date, days_ahead, sent_at)
+  notifications_sent (id, user_id, vehicle_id, doc_type, expiration_date, notification_type, sent_at)
+    -- worker dedup: unique (user_id, vehicle_id, doc_type, expiration_date, notification_type);
+    --   notification_type = den-práh jako text ("30", "7", …). Worker zapisuje po každém odeslání.
 RLS on user_data: auth.uid() = user_id.
 user_data keys: vehicles-list, vehicles-data, notification-settings, current-trip, saved-trips, eur-rate-cache.
 
