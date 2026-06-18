@@ -6,7 +6,7 @@ import {
   X, Check, Gauge, MapPin, Coins, Route, Link2,
   Sparkles, ArrowRightLeft,
   Save, BarChart3, Download, Filter, ChevronRight, Inbox, LogOut,
-  Bell, AlertCircle
+  Bell, AlertCircle, Star, Caravan, Package
 } from 'lucide-react';
 import {
   BarChart, Bar, PieChart, Pie, Cell,
@@ -29,6 +29,15 @@ const DOC_TYPES = [
   { key: 'insurance', label: 'Pojištění',          Icon: ShieldCheck  },
   { key: 'vignette',  label: 'Dálniční známka',    Icon: BadgeCheck   },
 ];
+
+// Přípojné / náklad u úseku — jen evidenční (NEovlivňuje výpočet spotřeby ani ceny).
+const ATTACHMENTS = [
+  { value: 'none',    label: 'Nic',     Icon: Minus   },
+  { value: 'caravan', label: 'Karavan', Icon: Caravan },
+  { value: 'trailer', label: 'Vozík',   Icon: Truck   },
+  { value: 'roofbox', label: 'Rakev',   Icon: Package },
+];
+const attachmentLabel = (val) => (ATTACHMENTS.find((a) => a.value === val) || ATTACHMENTS[0]).label;
 
 /* Pravidla pro expiraci:
    STK Toyota:        +4 roky
@@ -347,7 +356,7 @@ function CestakApp({ authUser }) {
   const [participants, setParticipants] = useState(1);
   const [activeVehicleId, setActiveVehicleId] = useState(null); // null dokud user nepřidá vozidlo
   const [items, setItems] = useState(() => [
-    { id: 1, type: 'segment', date: todayISODate(), kmBefore: '', kmAfter: '', litersRefueled: '', fuelPrice: '', currency: 'CZK', fuelType: 'gasoline' }
+    { id: 1, type: 'segment', date: todayISODate(), kmBefore: '', kmAfter: '', litersRefueled: '', fuelPrice: '', currency: 'CZK', fuelType: 'gasoline', attachment: 'none' }
   ]);
   const [savedTrips, setSavedTrips] = useState([]); // archív uložených cest
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -513,6 +522,7 @@ function CestakApp({ authUser }) {
   // Auto-vytvoří i v Vozidlech s prázdnými termíny (uživatel je vyplní později).
   const addCalcVehicle = ({ name, initialKm, defaultFuel }) => {
     const id = generateVehicleId(name, vehicles.map((v) => v.id));
+    const noPrimaryYet = !vehicles.some((v) => v.type === 'car' && v.isPrimary);
     const newVeh = {
       id,
       name: name.trim(),
@@ -522,6 +532,7 @@ function CestakApp({ authUser }) {
       inCalculator: true,
       hasVignette: true,
       stkYears: 2,
+      isPrimary: noPrimaryYet, // první auto se stane hlavním
     };
     setVehicles((prev) => [...prev, newVeh]);
     setVehiclesData((prev) => ({ ...prev, [id]: prev[id] || {} }));
@@ -529,15 +540,16 @@ function CestakApp({ authUser }) {
     return id;
   };
 
-  // Po hydrataci drž aktivní vozidlo validní: když není nastavené, nebo ukazuje
-  // na vozidlo, které už neexistuje / není v kalkulátoru (např. po smazání),
-  // přepni na první dostupné — nebo na null, pokud žádné kalkulátorové není.
+  // Po hydrataci drž aktivní vozidlo validní: když není nastavené nebo ukazuje
+  // na auto, které už neexistuje (např. po smazání), přepni na hlavní vozidlo —
+  // a když žádné hlavní není, na první auto (nebo null, pokud žádné auto není).
   useEffect(() => {
     if (!hydrated) return;
-    const activeValid = vehicles.some((v) => v.id === activeVehicleId && v.inCalculator);
+    const cars = vehicles.filter((v) => v.type === 'car');
+    const activeValid = cars.some((v) => v.id === activeVehicleId);
     if (!activeValid) {
-      const first = vehicles.find((v) => v.inCalculator);
-      setActiveVehicleId(first ? first.id : null);
+      const fallback = cars.find((v) => v.isPrimary) || cars[0];
+      setActiveVehicleId(fallback ? fallback.id : null);
     }
   }, [hydrated, vehicles, activeVehicleId]);
 
@@ -612,6 +624,7 @@ function CestakApp({ authUser }) {
         fuelPrice: '',
         currency: last?.currency || 'CZK',
         fuelType: v?.defaultFuel || 'gasoline', // palivo fixní podle vozidla
+        attachment: 'none', // přípojné/náklad — výchozí žádné
       },
     ]);
   };
@@ -658,6 +671,7 @@ function CestakApp({ authUser }) {
       kmBefore: '', kmAfter: '',
       litersRefueled: '', fuelPrice: '', currency: 'CZK',
       fuelType: v?.defaultFuel || 'gasoline',
+      attachment: 'none',
     }]);
   };
 
@@ -1157,7 +1171,7 @@ function TripView({
             </button>
           </div>
           {(() => {
-            const cars = vehicles.filter((v) => v.type === 'car' && v.inCalculator);
+            const cars = vehicles.filter((v) => v.type === 'car');
             if (cars.length === 0) {
               return (
                 <button
@@ -1190,7 +1204,10 @@ function TripView({
                           : 'bg-stone-800/50 border-stone-700 text-stone-300 hover:bg-stone-800'
                       }`}
                     >
-                      <div className="font-display text-lg leading-none">{v.name}</div>
+                      <div className="font-display text-lg leading-none flex items-center gap-1.5">
+                        <span className="truncate">{v.name}</span>
+                        {v.isPrimary && <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500 shrink-0" />}
+                      </div>
                       <div className="text-xs mt-1 font-mono opacity-70">
                         {v.defaultFuel === 'diesel' ? 'nafta' : 'benzín'}
                       </div>
@@ -1325,6 +1342,7 @@ function SegmentCard({ item, calc, eurRate, onUpdate, onRemove, canRemove }) {
   const isFirst       = calc?.isFirst;
   const linkedBefore  = !isFirst && calc?.kmBeforeNum != null ? calc.kmBeforeNum : null;
   const meziLitersInSegment = calc?.pendingMeziLiters || 0;
+  const [attachOpen, setAttachOpen] = useState(false);
 
   return (
     <div className={`bg-stone-900/70 border rounded-2xl overflow-hidden transition ${
@@ -1478,6 +1496,44 @@ function SegmentCard({ item, calc, eurRate, onUpdate, onRemove, canRemove }) {
           {item.currency === 'EUR' && item.fuelPrice && (
             <div className="text-xs text-stone-500 mt-1.5 font-mono">
               ≈ {formatNumber(parseFloat(item.fuelPrice) * eurRate, 2)} Kč/L
+            </div>
+          )}
+        </div>
+
+        {/* PŘÍPOJNÉ / NÁKLAD — rozbalovací volba (jen evidenční, neovlivňuje výpočet) */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setAttachOpen((o) => !o)}
+            className="w-full flex items-center justify-between gap-2 bg-stone-800/40 border border-stone-700/70 rounded-xl px-3 py-2.5 text-left active:scale-95 transition"
+          >
+            <span className="text-xs uppercase tracking-wider text-stone-500 flex items-center gap-1.5">
+              <Caravan className="w-3.5 h-3.5" /> Přípojné / náklad
+            </span>
+            <span className="flex items-center gap-1.5 text-sm text-stone-200 font-semibold">
+              {attachmentLabel(item.attachment)}
+              <ChevronRight className={`w-4 h-4 text-stone-500 transition ${attachOpen ? 'rotate-90' : ''}`} />
+            </span>
+          </button>
+          {attachOpen && (
+            <div className="grid grid-cols-4 gap-1.5 mt-2">
+              {ATTACHMENTS.map((a) => {
+                const A = a.Icon;
+                const sel = (item.attachment || 'none') === a.value;
+                return (
+                  <button
+                    key={a.value}
+                    type="button"
+                    onClick={() => { onUpdate({ attachment: a.value }); setAttachOpen(false); }}
+                    className={`flex flex-col items-center gap-1 py-2 rounded-lg text-xs font-semibold transition active:scale-95 ${
+                      sel ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-400 border border-stone-700'
+                    }`}
+                  >
+                    <A className="w-4 h-4" />
+                    {a.label}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -1636,6 +1692,9 @@ function DetailedSummary({ computed, participants }) {
                     </div>
                     <div className="text-xs text-stone-600 font-mono">
                       {formatNumber(c.price, 2)} {c.currency === 'EUR' ? '€' : 'Kč'}/L · {c.fuelType === 'diesel' ? 'nafta' : 'benzín'}
+                      {c.attachment && c.attachment !== 'none' && (
+                        <span className="text-amber-500/80"> · {attachmentLabel(c.attachment)}</span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1796,6 +1855,7 @@ function VehiclesView({
 
   const handleAddVehicle = (data) => {
     const id = generateVehicleId(data.name, vehicles.map((v) => v.id));
+    const noPrimaryYet = !vehicles.some((v) => v.type === 'car' && v.isPrimary);
     const newVeh = {
       id,
       name: data.name.trim(),
@@ -1804,6 +1864,7 @@ function VehiclesView({
       inCalculator: false,        // jen tracking
       hasVignette: data.hasVignette,
       stkYears: parseInt(data.stkYears, 10),
+      isPrimary: noPrimaryYet, // první auto se stane hlavním
     };
     setVehicles([...vehicles, newVeh]);
     // Ukládáme jen "od" — datum konce platnosti se vždy dopočítává (viz calcExpiration).
@@ -1842,6 +1903,15 @@ function VehiclesView({
       delete next[id];
       saveVehiclesData(next);
     }
+  };
+
+  // Hlavní vozidlo = výchozí volba v kalkulátoru. Jen jedno auto může být hlavní.
+  const handleTogglePrimary = (id) => {
+    setVehicles(vehicles.map((v) => {
+      if (v.type !== 'car') return v;
+      if (v.id === id) return { ...v, isPrimary: !v.isPrimary };
+      return { ...v, isPrimary: false };
+    }));
   };
 
   return (
@@ -1884,6 +1954,7 @@ function VehiclesView({
                 data={vehiclesData[v.id] || {}}
                 onEdit={(docType) => onEdit({ vehicleId: v.id, docType })}
                 onDelete={() => handleDelete(v.id, v.name)}
+                onSetPrimary={() => handleTogglePrimary(v.id)}
               />
             ))}
           </div>
@@ -1957,7 +2028,7 @@ function VehiclesView({
   );
 }
 
-function VehicleCard({ vehicle, data, onEdit, onDelete }) {
+function VehicleCard({ vehicle, data, onEdit, onDelete, onSetPrimary }) {
   const applicable = docsForVehicle(vehicle);
   const docs = applicable.map((d) => {
     const stored = data[d.key] || {};
@@ -1982,11 +2053,26 @@ function VehicleCard({ vehicle, data, onEdit, onDelete }) {
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${t.dot} ring-4 ${t.ring}`} />
           <div className="font-display text-2xl tracking-wider truncate">{vehicle.name.toUpperCase()}</div>
+          {vehicle.isPrimary && (
+            <span className="text-xs font-semibold text-amber-400 bg-amber-500/15 rounded px-1.5 py-0.5 shrink-0">HLAVNÍ</span>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <div className="text-xs uppercase tracking-wider text-stone-500 font-mono">
             {isTrailer ? 'vozík' : (vehicle.defaultFuel === 'diesel' ? 'nafta' : 'benzín')}
           </div>
+          {onSetPrimary && !isTrailer && (
+            <button
+              onClick={onSetPrimary}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
+                vehicle.isPrimary ? 'bg-amber-500/20 text-amber-400' : 'bg-stone-800 text-stone-500 hover:text-amber-400'
+              }`}
+              title={vehicle.isPrimary ? 'Hlavní vozidlo (klepnutím zrušit)' : 'Nastavit jako hlavní vozidlo'}
+              aria-label="Hlavní vozidlo"
+            >
+              <Star className={`w-3.5 h-3.5 ${vehicle.isPrimary ? 'fill-current' : ''}`} />
+            </button>
+          )}
           {onDelete && (
             <button
               onClick={onDelete}
@@ -2699,7 +2785,7 @@ function exportToCSV(trips, eurRate, vehicles) {
   const headers = [
     'Cesta', 'Vozidlo', 'Účastníci', 'Datum',
     'Typ', 'Č.', 'km Před', 'km Po', 'Vzdálenost',
-    'Litry', 'Cena/L', 'Měna', 'Palivo',
+    'Litry', 'Cena/L', 'Měna', 'Palivo', 'Přípojné',
     'Cena Kč', 'Cena na osobu Kč',
   ];
 
@@ -2735,7 +2821,7 @@ function exportToCSV(trips, eurRate, vehicles) {
           isFinite(after)  ? after  : '',
           dist || '',
           liters || '', price || '',
-          it.currency || '', fuel,
+          it.currency || '', fuel, attachmentLabel(it.attachment),
           Math.round(costCZK), Math.round(perPerson),
         ]);
       } else {
@@ -2745,7 +2831,7 @@ function exportToCSV(trips, eurRate, vehicles) {
           'mezitank.', '',
           '', '', '',
           liters || '', price || '',
-          it.currency || '', fuel,
+          it.currency || '', fuel, '',
           Math.round(costCZK), Math.round(perPerson),
         ]);
       }
