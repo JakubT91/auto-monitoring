@@ -116,7 +116,9 @@ export async function runNotifications(env) {
         const fromIso = docEntry && (docEntry.from || docEntry.dateFrom);
         if (!fromIso) continue;
 
-        const years = docType === 'stk' ? (meta.stkYears || DEFAULT_YEARS.stk) : DEFAULT_YEARS[docType];
+        const years = docType === 'stk'
+          ? (meta.type === 'trailer' ? 2 : (meta.stkYears || DEFAULT_YEARS.stk)) // vozíky: STK vždy 2 roky
+          : DEFAULT_YEARS[docType];
         const expDate = calcExpiry(fromIso, years);
         if (!expDate) continue;
 

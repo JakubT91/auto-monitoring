@@ -47,7 +47,7 @@ Commands:
 - NO <form> in modals. Three modals use <div> + <button onClick={submit}>. Sandboxed iframes block form submit silently.
 - Multi-tenant via RLS: all queries auto-filtered by auth.uid() = user_id. Publishable key in browser; service-role key ONLY in Worker secrets, never in frontend/git.
 - vehicles-list (array of metadata) and vehicles-data (object keyed by id, holds doc dates) are SEPARATE keys. Update both together when adding/deleting vehicle.
-- Always store document "from" (issue date), never "to". Expiration is CALCULATED: STK car +2y, STK trailer +4y, insurance +1y, vignette +1y. Frontend helper calcExpiration, worker helper calcExpiry must stay in sync.
+- Always store document "from" (issue date), never "to". Expiration is CALCULATED: STK car +2y or +4y (user picks in the add-car modal), STK trailer +2y (ALWAYS — fixed, no choice; enforced in yearsFor + worker by vehicle.type==='trailer'), insurance +1y, vignette +1y. Frontend helper calcExpiration, worker helper calcExpiry must stay in sync.
 - Dates stored as YYYY-MM-DD strings. Worker: daysLeft = round((expiry - today)/86400000) in UTC. Threshold matching uses +/-1 day tolerance for timezone edge cases.
 
 ## 7) Deployment

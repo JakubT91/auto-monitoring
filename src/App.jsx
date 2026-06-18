@@ -33,11 +33,14 @@ const DOC_TYPES = [
 /* Pravidla pro expiraci:
    STK Toyota:        +4 roky
    STK ostatní auta:  +2 roky
-   STK vozík:         +4 roky   (uloženo přímo v stkYears)
+   STK vozík:         +2 roky   (vždy, nezávisle na stkYears)
    Pojištění:         +1 rok    (vše)
    Dálniční známka:   +1 rok                                          */
 function yearsFor(vehicle, docType) {
-  if (docType === 'stk') return vehicle.stkYears ?? 2;
+  if (docType === 'stk') {
+    if (vehicle.type === 'trailer') return 2; // vozíky: STK vždy na 2 roky
+    return vehicle.stkYears ?? 2;             // auta: 2 nebo 4 roky (volí uživatel)
+  }
   return 1; // insurance + vignette
 }
 
@@ -2281,7 +2284,7 @@ function AddTrackingVehicleModal({ onCancel, onConfirm }) {
 
 function AddTrailerModal({ onCancel, onConfirm }) {
   const [name, setName]                       = useState('');
-  const [stkYears, setStkYears]               = useState(4);
+  const stkYears = 2;                         // vozíky: STK vždy 2 roky (bez volby)
   const [initialStk, setInitialStk]           = useState('');
   const [initialInsurance, setInitialInsurance] = useState('');
   const [error, setError]                     = useState('');
@@ -2315,17 +2318,10 @@ function AddTrailerModal({ onCancel, onConfirm }) {
 
         <div>
           <label className="text-xs uppercase tracking-wider text-stone-500 mb-1.5 block">STK platnost</label>
-          <div className="grid grid-cols-2 gap-2">
-            {[2, 4].map((y) => (
-              <button key={y} type="button" onClick={() => setStkYears(y)}
-                className={`py-3 rounded-xl text-sm font-semibold transition active:scale-95 ${
-                  stkYears === y ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-400 border border-stone-700'
-                }`}>
-                {y} roky
-              </button>
-            ))}
+          <div className="bg-stone-800/60 border border-stone-700 rounded-xl px-3 py-3 text-sm text-stone-300 flex items-center gap-2">
+            <Wrench className="w-4 h-4 text-amber-400 shrink-0" />
+            <span><span className="font-semibold text-stone-100">2 roky</span> — vozíky mají STK vždy na 2 roky.</span>
           </div>
-          <div className="text-xs text-stone-500 mt-1">Vozíky obvykle 4 roky.</div>
         </div>
 
         <div className="border-t border-stone-800 pt-3 space-y-3">
